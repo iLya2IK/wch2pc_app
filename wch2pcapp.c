@@ -710,6 +710,7 @@ static void __main_task(void *args)
 
                 if (tsk->on_sync) {
                     tsk->on_sync(tsk->ID, h2pca_locked_GET_STATES(), tsk->user_data, &p);
+                    __check_h2pc_errors();
                     if (p != tsk->period) {
                         esp_timer_stop(app.user_handles[i]);
                         tsk->period = p;
