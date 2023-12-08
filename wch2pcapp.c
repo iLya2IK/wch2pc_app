@@ -41,7 +41,7 @@
 #define DEVICE_CONFIG   "device_config"
 #define MAIN_TASK_NAME  "main_task"
 
-#define DEFAULT_HEAP_SIZE (1024 * 12)
+#define DEFAULT_HEAP_SIZE (1024 * 48)
 
 #define SEND_MSG_TIMER_DELTA                    1000000
 #define GET_MSG_TIMER_DELTA                     4000000
@@ -63,7 +63,7 @@ static void __set_error(esp_err_t * error, esp_err_t erv) {
         *error = erv;
 }
 
-h2pca_task * h2pca_init_task(const char * TAG, h2pca_task_id ID, void * user_data, esp_err_t * error) {
+h2pca_task * h2pca_new_task(const char * TAG, h2pca_task_id ID, void * user_data, esp_err_t * error) {
     h2pca_task * tsk = (h2pca_task *)malloc(sizeof(h2pca_task));
 
     if (tsk == NULL) {
@@ -86,7 +86,7 @@ esp_err_t h2pca_done_task(h2pca_task * tsk) {
     return ESP_OK;
 }
 
-h2pca_tasks * h2pca_init_task_pool(esp_err_t * error) {
+h2pca_tasks * h2pca_new_task_pool(esp_err_t * error) {
     h2pca_tasks * pool = (h2pca_tasks*)malloc(sizeof(h2pca_tasks));
 
     if (pool == NULL) {
@@ -118,7 +118,7 @@ esp_err_t h2pca_task_pool_add_task(h2pca_tasks * pool, h2pca_task * tsk) {
     return ESP_OK;
 }
 
-esp_err_t h2pca_done_task_pool(h2pca_tasks * tsks) {
+esp_err_t h2pca_release_task_pool(h2pca_tasks * tsks) {
     if (tsks == NULL) return ESP_ERR_INVALID_ARG;
 
     if (tsks->tasks != NULL) {
@@ -194,6 +194,8 @@ h2pca_status * h2pca_init(h2pca_config * cfg, esp_err_t* error) {
 
     app.mac_str[12] = 0;
 
+    memset(app.device_char, '0', 4);
+
     app.device_char[4] = UPPER_XDIGITS[(uint8_t)((CONFIG_WC_DEVICE_CHAR1_UUID >> 12) & 0x000f)];
     app.device_char[5] = UPPER_XDIGITS[(uint8_t)((CONFIG_WC_DEVICE_CHAR1_UUID >> 8) & 0x000f)];
     app.device_char[6] = UPPER_XDIGITS[(uint8_t)((CONFIG_WC_DEVICE_CHAR1_UUID >> 4) & 0x000f)];
@@ -231,10 +233,6 @@ esp_err_t h2pca_ble_config_init_standard(h2pca_ble_config * cfg) {
                                 app.cfg->cb(__VA_ARGS__);
 
 
-
-/* forward decrlarations */
-void finalize_app();
-
 static void set_time(void)
 {
     struct timeval tv = {
@@ -249,15 +247,24 @@ static void set_time(void)
     sntp_init();
 }
 
-static void __consume_protocol_error() {
-    int err = h2pc_get_last_error();
+static void __check_h2pc_errors() {
+    if (h2pca_locked_CHK_STATE(WIFI_CONNECTED_BIT|HOST_CONNECTED_BIT)) {
+        if (h2pc_get_connected()) {
+            if (h2pc_get_protocol_errors_cnt() > 0) {
+                int err = h2pc_get_last_error();
 
-    if (err != REST_RESULT_OK)
-        EXEC_CB(on_error, err);
+                if (err != REST_RESULT_OK)
+                    EXEC_CB(on_error, err);
 
-    if (err == REST_ERR_NO_SUCH_SESSION) {
-        h2pca_locked_CLR_ALL_STATES();
-        h2pca_locked_SET_STATE(MODE_AUTH);
+                if (err == REST_ERR_NO_SUCH_SESSION) {
+                    h2pca_locked_CLR_STATE(AUTHORIZED_BIT);
+                    h2pca_locked_SET_STATE(MODE_AUTH);
+                } else
+                    __disconnect_host();
+            }
+        } else {
+            __disconnect_host();
+        }
     }
 }
 
@@ -284,7 +291,10 @@ static void __connect_to_http2() {
 
     if (h2pc_connect_to_http2(addr)) {
         app.connect_errors = 0;
+
         h2pca_locked_SET_STATE(HOST_CONNECTED_BIT | MODE_AUTH);
+
+        EXEC_CB(on_connect);
     } else
         app.connect_errors++;
 }
@@ -314,16 +324,18 @@ static void __send_authorize() {
         h2pca_locked_SET_STATE(AUTHORIZED_BIT | MODE_RECIEVE_MSG);
         strcpy(app.device_name, _device);
         ESP_LOGI(app.cfg->LOG_TAG, "hash=%s", h2pc_get_sid());
+
+        EXEC_CB(on_auth);
     }
     else
     if (res == H2PC_ERR_PROTOCOL)
-        __consume_protocol_error();
+        __check_h2pc_errors();
     else
         __disconnect_host();
 }
 
 
-static esp_err_t event_handler(void *ctx, system_event_t *event)
+static esp_err_t event_handler(void *ctx, fsystem_event_t *event)
 {
     switch (event->event_id) {
     case SYSTEM_EVENT_STA_START:
@@ -347,13 +359,14 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
 
         sntp_stop();
 
-        EXEC_CB(on_wifi_dis);
-
         if (h2pca_locked_CHK_STATE(HOST_CONNECTED_BIT)) h2pc_disconnect_http2();
         h2pca_locked_CLR_ALL_STATES();
 
         h2pca_locked_CLR_STATE(WIFI_CONNECTED_BIT);
         h2pc_reset_buffers();
+
+        EXEC_CB(on_wifi_dis);
+
         break;
     default:
         break;
@@ -431,27 +444,6 @@ void __user_task_cb(void* arg)
     }
 }
 
-static void __check_h2pc_errors() {
-    if (h2pca_locked_CHK_STATE(WIFI_CONNECTED_BIT|HOST_CONNECTED_BIT)) {
-        if (h2pc_get_connected()) {
-            if (h2pc_get_protocol_errors_cnt() > 0) {
-                int err = h2pc_get_last_error();
-
-                if (err != REST_RESULT_OK)
-                    EXEC_CB(on_error, err);
-
-                if (err == REST_ERR_NO_SUCH_SESSION) {
-                    h2pca_locked_CLR_STATE(AUTHORIZED_BIT);
-                    h2pca_locked_SET_STATE(MODE_AUTH);
-                } else
-                    __disconnect_host();
-            }
-        } else {
-            __disconnect_host();
-        }
-    }
-}
-
 bool __std_on_incoming_msg(const cJSON * src, const cJSON * kind, const cJSON * iparams, const cJSON * msg_id) {
     // do nothing
     return true;
@@ -467,13 +459,6 @@ static void __send_msgs() {
     int res = h2pc_req_send_msgs_sync();
     if (res == ESP_OK)
         h2pca_locked_CLR_STATE(MODE_SEND_MSG);
-}
-
-void __finalize_app()
-{
-    __disconnect_host();
-
-    h2pc_finalize();
 }
 
 static void __main_task(void *args)
@@ -551,7 +536,7 @@ static void __main_task(void *args)
             nvs_commit(app.nvs_h);
 
             #ifdef LOG_DEBUG
-            esp_log_buffer_char(JSON_CFG, cfg_str, strlen(cfg_str));
+            esp_log_buffer_char(DEVICE_CONFIG, cfg_str, strlen(cfg_str));
             #endif
 
             cJSON_free(cfg_str);
@@ -567,7 +552,7 @@ static void __main_task(void *args)
     /* init system timers */
     esp_timer_create_args_t timer_args;
 
-    app.sys_handles = malloc(sizeof(esp_timer_handle_t) * MAX_SYS_TASKS);
+    app.sys_handles = (esp_timer_handle_t*) malloc(sizeof(esp_timer_handle_t) * MAX_SYS_TASKS);
 
     timer_args.callback = &__msgs_get_cb;
     ESP_ERROR_CHECK(esp_timer_create(&timer_args, &(app.sys_handles[SYS_TASK_RECV])));
@@ -610,8 +595,6 @@ static void __main_task(void *args)
 
     while (1)
     {
-        // ESP_LOGI(WC_TAG, "New step. states: %d", locked_GET_STATES());
-
         EXEC_CB(on_begin_step);
 
         if (h2pca_locked_CHK_STATE(WIFI_CONNECTED_BIT)) {
@@ -706,11 +689,12 @@ static void __main_task(void *args)
             h2pca_task * tsk = app.cfg->tasks.tasks[i];
 
             if (h2pca_locked_CHK_STATE((tsk->apply_bitmask | tsk->req_bitmask))) {
-                uint32_t p = tsk->period;
-
                 if (tsk->on_sync) {
+                    uint32_t p = tsk->period;
+
                     tsk->on_sync(tsk->ID, h2pca_locked_GET_STATES(), tsk->user_data, &p);
                     __check_h2pc_errors();
+
                     if (p != tsk->period) {
                         esp_timer_stop(app.user_handles[i]);
                         tsk->period = p;
@@ -728,7 +712,9 @@ static void __main_task(void *args)
 
     EXEC_CB(on_finish_loop);
 
-    __finalize_app();
+    __disconnect_host();
+
+    h2pc_finalize();
 
     vTaskDelete(NULL);
 }
@@ -761,7 +747,7 @@ esp_err_t h2pca_done() {
 
     if (app.sys_handles != NULL) free(app.sys_handles);
     if (app.user_handles != NULL) free(app.user_handles);
-    h2pca_done_task_pool(&(app.cfg->tasks));
+    h2pca_release_task_pool(&(app.cfg->tasks));
 
     app.sys_handles = NULL;
     app.user_handles = NULL;

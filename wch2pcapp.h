@@ -194,7 +194,7 @@ typedef struct h2pca_status_t
 
 /* Application tasks layer */
 
-/* Init the new h2pc task
+/* Create and init the new h2pc task
  * @param TAG [input] TAG name of the task for logging
  * @param ID  [input] Uniq ID value to send as parameter in callbacks
  * @param user_data [input] The user data, associated with the task
@@ -202,7 +202,7 @@ typedef struct h2pca_status_t
  *                  till initialization
  * @return The pointer to the initialized task or NULL if error
  */
-h2pca_task * h2pca_init_task(const char * TAG, h2pca_task_id ID, void * user_data, esp_err_t * error);
+h2pca_task * h2pca_new_task(const char * TAG, h2pca_task_id ID, void * user_data, esp_err_t * error);
 
 /* Destroy the task. if the task attached to an task pool -
  * no need to remove it - this task pool be removed in
@@ -213,12 +213,12 @@ h2pca_task * h2pca_init_task(const char * TAG, h2pca_task_id ID, void * user_dat
  */
 esp_err_t h2pca_done_task(h2pca_task * tsk);
 
-/* Init the new h2pc task pool
+/* Create and init the new h2pc task pool
  * @param error  [output] if not null - here stored the last error
  *                  till initialization
  * @return The pointer to the initialized task pool or NULL if error
  */
-h2pca_tasks * h2pca_init_task_pool(esp_err_t * error);
+h2pca_tasks * h2pca_new_task_pool(esp_err_t * error);
 
 /* Add new initialized task to the task pool
  * @param error  [output] if not null - here stored the last error
@@ -229,14 +229,15 @@ h2pca_tasks * h2pca_init_task_pool(esp_err_t * error);
  */
 esp_err_t h2pca_task_pool_add_task(h2pca_tasks * pool, h2pca_task * tsk);
 
-/* Destroy the tasks pool. if the task pool attached to an app -
- * no need to remove it - this task pool will be removed in
+/* Destroy all tasks in the task pool. To destroy the task pool, additionally
+ * use free route. If the task pool attached to the current app -
+ * no need to release it - this task pool will be removed in
  * h2pca_done method internaly
  * @param tsks [input] initilized task pool
  * @return the last error code
  *         ESP_ERR_INVALID_ARG - \a tsks param is NULL or malformed
  */
-esp_err_t h2pca_done_task_pool(h2pca_tasks * tsks);
+esp_err_t h2pca_release_task_pool(h2pca_tasks * tsks);
 
 /* Application lifecircle layer */
 
