@@ -247,6 +247,17 @@ static void set_time(void)
     sntp_init();
 }
 
+/* disconnect from host. reset all states */
+static void __disconnect_host() {
+    if (h2pca_locked_CHK_STATE(HOST_CONNECTED_BIT))
+        h2pc_disconnect_http2();
+    else
+        h2pc_reset_buffers();
+    h2pca_locked_CLR_ALL_STATES();
+
+    EXEC_CB(on_disconnect);
+}
+
 static void __check_h2pc_errors() {
     if (h2pca_locked_CHK_STATE(WIFI_CONNECTED_BIT|HOST_CONNECTED_BIT)) {
         if (h2pc_get_connected()) {
@@ -266,17 +277,6 @@ static void __check_h2pc_errors() {
             __disconnect_host();
         }
     }
-}
-
-/* disconnect from host. reset all states */
-static void __disconnect_host() {
-    if (h2pca_locked_CHK_STATE(HOST_CONNECTED_BIT))
-        h2pc_disconnect_http2();
-    else
-        h2pc_reset_buffers();
-    h2pca_locked_CLR_ALL_STATES();
-
-    EXEC_CB(on_disconnect);
 }
 
 /* connect to host */
@@ -325,7 +325,7 @@ static void __send_authorize() {
         strcpy(app.device_name, _device);
         ESP_LOGI(app.cfg->LOG_TAG, "hash=%s", h2pc_get_sid());
 
-        EXEC_CB(on_auth);
+        EXEC_CB(on_auth, h2pc_get_sid());
     }
     else
     if (res == H2PC_ERR_PROTOCOL)
@@ -335,7 +335,7 @@ static void __send_authorize() {
 }
 
 
-static esp_err_t event_handler(void *ctx, fsystem_event_t *event)
+static esp_err_t event_handler(void *ctx, system_event_t *event)
 {
     switch (event->event_id) {
     case SYSTEM_EVENT_STA_START:
@@ -771,11 +771,11 @@ bool h2pca_locked_CHK_STATE(h2pca_state astate) {
 }
 
 void h2pca_locked_SET_STATE(h2pca_state astate) {
-    xEventGroupClearBits(app.client_state, astate);
+    xEventGroupSetBits(app.client_state, astate);
 }
 
 void h2pca_locked_CLR_STATE(h2pca_state astate) {
-    xEventGroupSetBits(app.client_state, astate);
+    xEventGroupClearBits(app.client_state, astate);
 }
 
 void h2pca_locked_CLR_ALL_STATES() {
