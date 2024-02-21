@@ -41,6 +41,8 @@
 #define DEVICE_CONFIG   "device_config"
 #define MAIN_TASK_NAME  "main_task"
 
+#define RECONNECT_TIMEOUT (30 * configTICK_RATE_HZ)
+
 #define DEFAULT_HEAP_SIZE (1024 * 48)
 
 #define SEND_MSG_TIMER_DELTA                    1000000
@@ -590,11 +592,15 @@ static void __main_task(void *args)
 
     EXEC_CB(on_begin_loop);
 
-    int connectDelay = 0;
+    int connectDelay = RECONNECT_TIMEOUT;
     int wifiDisconnectedTime = 0;
+    int hostDisconnectedTime = 0;
 
     while (1)
     {
+        if (connectDelay > 0)
+            connectDelay -= app.cfg->main_loop_period;
+
         EXEC_CB(on_begin_step);
 
         if (h2pca_locked_CHK_STATE(WIFI_CONNECTED_BIT)) {
@@ -611,6 +617,8 @@ static void __main_task(void *args)
 
 
             if (h2pca_locked_CHK_STATE(HOST_CONNECTED_BIT)) {
+
+                hostDisconnectedTime = 0;
 
                 /* authorize the device on server */
                 if (h2pca_locked_CHK_STATE(MODE_AUTH)) {
@@ -642,28 +650,21 @@ static void __main_task(void *args)
 
             } else {
 
-                connectDelay -= app.cfg->main_loop_period;
+                hostDisconnectedTime += app.cfg->main_loop_period;
+
+                if (hostDisconnectedTime > (5400 * configTICK_RATE_HZ))
+                    ESP_ERROR_CHECK(ESP_ERR_INVALID_STATE); // drop to deep reload if no connection to host over 90 minutes
 
                 if (connectDelay <= 0) {
 
                     __connect_to_http2();
 
-                    if (app.connect_errors) {
-                        switch (app.connect_errors)
-                        {
-                        case 11:
-                            connectDelay = 300 * configTICK_RATE_HZ; // 5 minutes
-                            break;
-                        case 12:
-                            ESP_ERROR_CHECK(ESP_ERR_INVALID_STATE); // drop to deep reload if no connection to host over 15 minutes
-                            break;
-                        default:
-                            connectDelay = app.connect_errors * 10 * configTICK_RATE_HZ;
-                            break;
-                        }
+                    if (app.connect_errors > 10) {
+                        connectDelay = 300 * configTICK_RATE_HZ; // 5 minutes
+                    } else if (app.connect_errors > 0) {
+                        connectDelay = app.connect_errors * 10 * configTICK_RATE_HZ;
                     } else
-                        connectDelay = 0;
-
+                        connectDelay = RECONNECT_TIMEOUT;
                 }
 
             }
@@ -671,17 +672,15 @@ static void __main_task(void *args)
         } else {
             wifiDisconnectedTime += app.cfg->main_loop_period;
 
-            if (wifiDisconnectedTime > 900000)
+            if (wifiDisconnectedTime > (900 * configTICK_RATE_HZ))
                 ESP_ERROR_CHECK(ESP_ERR_INVALID_STATE); // drop to deep reload if no connection to AP over 15 minutes
-
-            connectDelay -= app.cfg->main_loop_period;
 
             if ((connectDelay <= 0) && (app.wifi_connect_errors)) {
 
                 app.wifi_connect_errors = 0;
                 ESP_ERROR_CHECK(esp_wifi_connect());
 
-                connectDelay = 30 * configTICK_RATE_HZ; // 30 sec timeout between two wifi connection attempts
+                connectDelay = RECONNECT_TIMEOUT; // 30 sec timeout between two wifi connection attempts
             }
         }
 
